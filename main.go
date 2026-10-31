@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // lull — a cozy little terminal radio for Monstercat Silk's 24/7 livestreams.
 package main
 

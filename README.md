@@ -122,6 +122,12 @@ lull remembers your volume between runs, in `~/.config/lull/volume` on Linux and
 - **Track names:** every 25 seconds lull fetches one 360p frame, crops the artist/title overlay in the bottom-left corner and runs it through Tesseract. A new song only replaces the current one when two readings agree, which rides out the overlay fading between songs. The overlay is all caps, so lull converts names to title case; stylized names like "BT" will come out as "Bt".
 - **Visualizer:** it's decorative. The bars drift toward random, bass-heavy targets while music is playing rather than analysing the audio.
 
+## License
+
+Copyright (C) 2026 Emma Anderson
+
+lull is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE) for the full text.
+
 ## Disclaimer
 
 lull is an unofficial fan project and isn't affiliated with or endorsed by Monstercat. All music belongs to its artists and Monstercat. Please support them on [Monstercat](https://www.monstercat.com/) and the [Monstercat Silk YouTube channel](https://www.youtube.com/@MonstercatSilk).
