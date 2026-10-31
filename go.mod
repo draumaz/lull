@@ -1,6 +1,6 @@
 module github.com/draumaz/lull
 
-go 1.27.3
+go 1.26.0
 
 require (
 	charm.land/bubbles/v2 v2.2.1

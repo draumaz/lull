@@ -33,7 +33,7 @@ lull runs on **Linux** and **macOS**. Windows isn't supported: lull talks to mpv
 
 | Dependency | Why |
 |---|---|
-| [Go](https://go.dev/dl/) 1.27.3 or newer | to build lull |
+| [Go](https://go.dev/dl/) 1.26 or newer | to build lull |
 | [mpv](https://mpv.io/) | plays the audio |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) | finds the live streams and hands them to mpv |
 
