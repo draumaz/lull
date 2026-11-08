@@ -1,0 +1,55 @@
+# Maintainer: Emma Anderson <workeandrs@gmail.com>
+pkgname=lull-git
+_pkgname=lull
+pkgver=r3.4b997e2
+pkgrel=1
+pkgdesc='A cozy terminal radio for Monstercat Silk livestreams'
+arch=('x86_64' 'aarch64')
+url='https://github.com/draumaz/lull'
+license=('GPL-3.0-or-later')
+depends=('glibc' 'mpv' 'yt-dlp')
+makedepends=('git' 'go>=2:1.26')
+optdepends=(
+  'ffmpeg: grab video frames for now-playing track names'
+  'tesseract: read now-playing track names via OCR'
+  'tesseract-data-eng: English language data for tesseract'
+)
+provides=("$_pkgname")
+conflicts=("$_pkgname")
+source=("$_pkgname::git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+  cd "$_pkgname"
+  printf 'r%s.%s' "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+prepare() {
+  cd "$_pkgname"
+  export GOPATH="$srcdir/gopath"
+  go mod download -modcacherw
+}
+
+build() {
+  cd "$_pkgname"
+  export GOPATH="$srcdir/gopath"
+  export CGO_CPPFLAGS="$CPPFLAGS"
+  export CGO_CFLAGS="$CFLAGS"
+  export CGO_CXXFLAGS="$CXXFLAGS"
+  export CGO_LDFLAGS="$LDFLAGS"
+  export GOFLAGS='-buildmode=pie -trimpath -mod=readonly -modcacherw'
+  go build -ldflags "-linkmode=external -extldflags \"$LDFLAGS\"" -o "$_pkgname" .
+}
+
+check() {
+  cd "$_pkgname"
+  export GOPATH="$srcdir/gopath"
+  export GOFLAGS='-buildmode=pie -trimpath -mod=readonly -modcacherw'
+  go vet ./...
+}
+
+package() {
+  cd "$_pkgname"
+  install -Dm755 "$_pkgname" "$pkgdir/usr/bin/$_pkgname"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$_pkgname/README.md"
+}

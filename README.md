@@ -86,6 +86,14 @@ With Go installed, this puts `lull` in `~/go/bin` (make sure that's on your `PAT
 go install github.com/draumaz/lull@latest
 ```
 
+On Arch Linux, build and install the package with the included PKGBUILD:
+
+```sh
+git clone https://github.com/draumaz/lull.git
+cd lull/packaging/arch
+makepkg -si
+```
+
 Or build from source:
 
 ```sh
