@@ -115,6 +115,7 @@ lull progressive   # also: p, 1
 |---|---|
 | `tab` `←` `→` `h` `l` | switch stream |
 | `1` `2` | jump to Progressive / Melodic |
+| click a tab | switch to that stream |
 | `space` `p` | pause |
 | `+` `=` `↑` `k` `pgup` | louder |
 | `-` `_` `↓` `j` `pgdn` | softer |

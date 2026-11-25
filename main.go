@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"image/color"
+	"math"
 	"math/rand/v2"
 	"os"
 	"os/exec"
@@ -304,6 +305,15 @@ func (m *model) setTrack(t track) {
 	}
 }
 
+// switchTo tunes in to channel i, or retries it if it's the one that failed.
+func (m *model) switchTo(i int) tea.Cmd {
+	if i == m.active && m.state != failed {
+		return nil
+	}
+	m.active = i
+	return m.tuneIn()
+}
+
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -331,10 +341,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "2":
 				next = 1
 			}
-			if next != m.active || m.state == failed {
-				m.active = next
-				return m, m.tuneIn()
-			}
+			return m, m.switchTo(next)
 		case key.Matches(msg, keys.Pause):
 			m.player.togglePause()
 		case key.Matches(msg, keys.Up):
@@ -343,6 +350,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.player.addVolume(-5)
 		case key.Matches(msg, keys.Mute):
 			m.player.toggleMute()
+		}
+
+	case tea.MouseClickMsg:
+		if msg.Button == tea.MouseLeft && m.resolved {
+			if i := m.tabAt(msg.X, msg.Y); i >= 0 {
+				return m, m.switchTo(i)
+			}
 		}
 
 	case mpvMsg:
@@ -469,10 +483,11 @@ func fg(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c)
 // text that follows.
 func withIcon(icon, text string) string { return icon + "  " + text }
 
-func (m model) View() tea.View {
-	ch := m.ch()
-	accent := ch.Colors[0]
-	l := m.layout()
+// compose renders everything but the placement in the window, and says
+// where the card sits horizontally within it.
+func (m model) compose() (ui string, cardX int, l layout) {
+	accent := m.ch().Colors[0]
+	l = m.layout()
 	inner := l.inner
 
 	sections := []string{m.header(accent, inner)}
@@ -499,7 +514,8 @@ func (m model) View() tea.View {
 	if l.border {
 		card = card.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Darken(accent, 0.25))
 	}
-	ui := card.Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
+	ui = card.Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
+	cardW := lipgloss.Width(ui)
 
 	if l.help {
 		h, full := m.help, m.help
@@ -513,7 +529,45 @@ func (m model) View() tea.View {
 		}
 		// help gives up on the ellipsis, and the width, when "…" won't fit
 		ui = lipgloss.JoinVertical(lipgloss.Center, append(parts, clip(h.View(keys), m.width))...)
+		// JoinVertical puts the odd column of slack on the left
+		cardX = int(math.Round(float64(lipgloss.Width(ui)-cardW) / 2))
 	}
+	return ui, cardX, l
+}
+
+// placeOffset is how far lipgloss.Place shifts a centred block of size n
+// within size total (Place puts the odd cell of slack on the right).
+func placeOffset(total, n int) int {
+	gap := total - n
+	if gap <= 0 {
+		return 0
+	}
+	return gap - int(math.Round(float64(gap)/2))
+}
+
+// tabAt is the channel whose tab is at cell (x, y) on screen, or -1.
+func (m model) tabAt(x, y int) int {
+	ui, cardX, l := m.compose()
+	if !l.tabs {
+		return -1
+	}
+	if m.width > 0 && m.height > 0 {
+		x -= placeOffset(m.width, lipgloss.Width(ui))
+		y -= placeOffset(m.height, lipgloss.Height(ui))
+	}
+	edge := cond(l.border, 1, 0)
+	top := edge + l.padY + 1 + cond(l.gaps, 1, 0) // below the header
+	x -= cardX + edge + l.padX
+	y -= top
+	tabWidth := l.inner / len(m.chans)
+	if y < 0 || y >= cond(l.bigTabs, 4, 1) || x < 0 || x >= tabWidth*len(m.chans) {
+		return -1
+	}
+	return x / tabWidth
+}
+
+func (m model) View() tea.View {
+	ui, _, _ := m.compose()
 
 	if m.width > 0 && m.height > 0 {
 		ui = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, ui)
@@ -523,7 +577,8 @@ func (m model) View() tea.View {
 
 	v := tea.NewView(ui)
 	v.AltScreen = true
-	v.WindowTitle = "lull · " + strings.ToLower(ch.Name)
+	v.MouseMode = tea.MouseModeCellMotion
+	v.WindowTitle = "lull · " + strings.ToLower(m.ch().Name)
 	return v
 }
 

@@ -61,3 +61,39 @@ func TestViewFitsWindow(t *testing.T) {
 		}
 	}
 }
+
+// Clicking a tab's label must pick that tab, wherever the layout put it.
+func TestTabAt(t *testing.T) {
+	for w := 20; w <= 220; w += 7 {
+		for h := 4; h <= 40; h += 3 {
+			m := testModel(w, h)
+			if !m.layout().tabs {
+				continue
+			}
+			lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+			for i, c := range m.chans {
+				name := c.Name[:4] // labels get cut short in narrow windows
+				found := false
+				for y, line := range lines {
+					col := strings.Index(line, name)
+					if col < 0 || strings.Contains(line, c.Title) {
+						continue
+					}
+					found = true
+					x := ansi.StringWidth(line[:col])
+					for dx := range len(name) {
+						if got := m.tabAt(x+dx, y); got != i {
+							t.Fatalf("%dx%d: click at %d,%d on %q hit tab %d", w, h, x+dx, y, name, got)
+						}
+					}
+				}
+				if !found {
+					t.Fatalf("%dx%d: %q not on screen", w, h, name)
+				}
+			}
+			if got := m.tabAt(0, 0); got != -1 {
+				t.Fatalf("%dx%d: top-left corner hit tab %d", w, h, got)
+			}
+		}
+	}
+}
