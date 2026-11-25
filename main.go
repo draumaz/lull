@@ -20,6 +20,7 @@ import (
 	"charm.land/bubbles/v2/spinner"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -30,10 +31,6 @@ const (
 	maxCardWidth = 120
 	minVizRows   = 3
 	maxVizRows   = 12
-
-	// everything in the view besides the visualizer: card chrome, header,
-	// tabs, title, status, help and the blank lines between them
-	chromeHeight = 21
 )
 
 // ── keys ────────────────────────────────────────────────────────────────────
@@ -137,29 +134,131 @@ func newModel(p *mpv, active, volume int) model {
 	return m
 }
 
-// cardWidth is the card's outer width, roughly 90% of the terminal.
-func (m model) cardWidth() int {
-	if m.width == 0 {
-		return minCardWidth
-	}
-	return min(max(m.width*9/10, minCardWidth), maxCardWidth)
+// layout is how much of the view fits in the terminal. As the window shrinks
+// the decoration goes first (padding, blank lines, the visualizer, borders)
+// so the parts that matter stay on screen.
+type layout struct {
+	cardW, inner int
+	border       bool
+	padX, padY   int
+	gaps         bool // blank lines between sections
+	tabs         bool
+	bigTabs      bool // bordered tabs with taglines, rather than one line
+	nowLines     int
+	viz          int // visualizer rows; 0 hides it
+	help         bool
+	helpGap      bool // blank line between the card and the help
 }
 
-// inner is the usable width inside the card's border and padding.
-func (m model) inner() int { return m.cardWidth() - 6 }
-
-// vizRows gives the visualizer whatever height is left over.
-func (m model) vizRows() int {
-	if m.height == 0 {
-		return minVizRows
+func (l layout) height() int {
+	sections := []int{1, l.nowLines, 1} // header, now playing, status
+	if l.tabs {
+		sections = append(sections, cond(l.bigTabs, 4, 1))
 	}
-	return min(max(m.height-chromeHeight, minVizRows), maxVizRows)
+	if l.viz > 0 {
+		sections = append(sections, l.viz)
+	}
+	h := 0
+	for _, s := range sections {
+		h += s
+	}
+	if l.gaps {
+		h += len(sections) - 1
+	}
+	h += 2*l.padY + cond(l.border, 2, 0)
+	h += cond(l.help, 1, 0) + cond(l.help && l.helpGap, 1, 0)
+	return h
 }
+
+func (m model) layout() layout {
+	w, h := m.width, m.height
+	if w == 0 || h == 0 {
+		w, h = minCardWidth, 100
+	}
+
+	l := layout{
+		border: true, padX: 2, padY: 1, gaps: true,
+		tabs: true, bigTabs: true, nowLines: 2, help: true, helpGap: true,
+	}
+	// the card is roughly 90% of the terminal, but never wider than it
+	l.cardW = min(max(w*9/10, minCardWidth), maxCardWidth, w)
+	setInner := func() { l.inner = max(1, l.cardW-2*l.padX-cond(l.border, 2, 0)) }
+	setInner()
+	if l.inner < 30 {
+		l.padX = 1
+		setInner()
+	}
+	if l.inner < 20 {
+		l.border, l.padX = false, 0
+		setInner()
+	}
+
+	// bordered tabs need room for their label plus the border
+	need := 0
+	for _, c := range m.chans {
+		need = max(need, lipgloss.Width(withIcon(c.Icon, c.Name)), lipgloss.Width(c.Tagline))
+	}
+	if l.inner/len(m.chans) < need+2 {
+		l.bigTabs = false
+	}
+
+	minViz := minVizRows
+	fits := func() bool {
+		l.viz = 0
+		spare := h - l.height() - cond(l.gaps, 1, 0)
+		l.viz = min(max(spare, 0), maxVizRows)
+		return l.viz >= minViz && l.height() <= h
+	}
+	// least important first
+	for _, shrink := range []func(){
+		func() { l.padY = 0 },
+		func() { l.helpGap = false },
+		func() { l.bigTabs = false },
+		func() { l.gaps = false },
+		func() { minViz = 1 },
+		func() { minViz = 0 },
+		func() { l.help = false },
+		func() { l.nowLines = 1 },
+		func() { l.border, l.padX = false, 0; setInner() },
+		func() { l.tabs = false },
+	} {
+		if fits() {
+			break
+		}
+		shrink()
+	}
+	if !fits() || minViz < minVizRows {
+		return l
+	}
+	// a tall visualizer can spare rows for breathing room it squeezed out
+	for _, luxury := range []func(*layout){
+		func(l *layout) { l.gaps = true },
+		func(l *layout) { l.helpGap = true },
+		func(l *layout) { l.padY = cond(l.gaps, 1, 0) }, // padding without gaps looks lopsided
+	} {
+		prev := l
+		luxury(&l)
+		if !fits() {
+			l = prev
+		}
+	}
+	return l
+}
+
+func cond[T any](ok bool, a, b T) T {
+	if ok {
+		return a
+	}
+	return b
+}
+
+// clip cuts a (possibly styled) string down to w cells.
+func clip(s string, w int) string { return ansi.Truncate(s, max(w, 0), "…") }
 
 // resizeBars matches the bar count to the card width, keeping current levels
 // so the visualizer doesn't jump.
 func (m *model) resizeBars() {
-	n := m.inner()
+	n := m.layout().inner
 	if n == len(m.bars) {
 		return
 	}
@@ -373,48 +472,92 @@ func withIcon(icon, text string) string { return icon + "  " + text }
 func (m model) View() tea.View {
 	ch := m.ch()
 	accent := ch.Colors[0]
-	inner := m.inner()
+	l := m.layout()
+	inner := l.inner
 
-	title := withIcon(fg(accent).Render(ch.Icon), fg(accent).Bold(true).Render("monstercat silk"))
-	badge := m.badge(accent)
-	gap := max(1, inner-lipgloss.Width(title)-lipgloss.Width(badge))
-	header := title + strings.Repeat(" ", gap) + badge
-
-	now := fg(ink).Width(inner).MaxHeight(2).Render(cmp.Or(m.mediaTitle, ch.Title))
-	if !m.track.empty() {
-		line := lipgloss.NewStyle().Width(inner).MaxHeight(1)
-		now = line.Foreground(ink).Bold(true).Render(m.track.Artist) + "\n" +
-			line.Foreground(muted).Render(m.track.Title)
+	sections := []string{m.header(accent, inner)}
+	if l.tabs {
+		sections = append(sections, m.tabs(l))
+	}
+	sections = append(sections, m.nowPlaying(l))
+	if l.viz > 0 {
+		sections = append(sections, m.visualizer(l.viz))
+	}
+	sections = append(sections, m.statusLine(inner))
+	if l.gaps {
+		spaced := make([]string, 0, 2*len(sections))
+		for i, s := range sections {
+			if i > 0 {
+				spaced = append(spaced, "")
+			}
+			spaced = append(spaced, s)
+		}
+		sections = spaced
 	}
 
-	body := lipgloss.JoinVertical(lipgloss.Left,
-		header,
-		"",
-		m.tabs(),
-		"",
-		now,
-		"",
-		m.visualizer(),
-		"",
-		m.statusLine(inner),
-	)
+	card := lipgloss.NewStyle().Padding(l.padY, l.padX).Width(l.cardW)
+	if l.border {
+		card = card.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Darken(accent, 0.25))
+	}
+	ui := card.Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
 
-	card := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Darken(accent, 0.25)).
-		Padding(1, 2).
-		Width(m.cardWidth()).
-		Render(body)
+	if l.help {
+		h, full := m.help, m.help
+		full.SetWidth(0)
+		if lipgloss.Width(full.View(keys)) > m.width {
+			h.ShortSeparator = " · " // tighten up before dropping keys
+		}
+		parts := []string{ui}
+		if l.helpGap {
+			parts = append(parts, "")
+		}
+		// help gives up on the ellipsis, and the width, when "…" won't fit
+		ui = lipgloss.JoinVertical(lipgloss.Center, append(parts, clip(h.View(keys), m.width))...)
+	}
 
-	ui := lipgloss.JoinVertical(lipgloss.Center, card, "", m.help.View(keys))
 	if m.width > 0 && m.height > 0 {
 		ui = lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, ui)
+		// last resort for absurdly small windows: crop rather than scroll
+		ui = lipgloss.NewStyle().MaxWidth(m.width).MaxHeight(m.height).Render(ui)
 	}
 
 	v := tea.NewView(ui)
 	v.AltScreen = true
 	v.WindowTitle = "lull · " + strings.ToLower(ch.Name)
 	return v
+}
+
+// header is the station name with the live badge pushed to the right; the
+// name shortens before the badge gets crowded out.
+func (m model) header(accent color.Color, width int) string {
+	icon := fg(accent).Render(m.ch().Icon)
+	badge := m.badge(accent)
+	room := width - lipgloss.Width(badge) - 1
+
+	title := icon
+	for _, name := range []string{"monstercat silk", "silk"} {
+		if t := withIcon(icon, fg(accent).Bold(true).Render(name)); lipgloss.Width(t) <= room {
+			title = t
+			break
+		}
+	}
+	gap := max(1, width-lipgloss.Width(title)-lipgloss.Width(badge))
+	return clip(title+strings.Repeat(" ", gap)+badge, width)
+}
+
+// nowPlaying always takes the same number of lines, so the layout doesn't
+// jump when a title wraps or the track changes.
+func (m model) nowPlaying(l layout) string {
+	box := lipgloss.NewStyle().Width(l.inner).Height(l.nowLines).MaxHeight(l.nowLines)
+	if m.track.empty() {
+		return box.Foreground(ink).Render(cmp.Or(m.mediaTitle, m.ch().Title))
+	}
+	artist := fg(ink).Bold(true).Render(m.track.Artist)
+	title := fg(muted).Render(m.track.Title)
+	if l.nowLines == 1 {
+		return box.Render(clip(artist+fg(faint).Render(" · ")+title, l.inner))
+	}
+	return box.Render(clip(artist, l.inner) + "\n" + clip(title, l.inner))
 }
 
 func (m model) badge(accent color.Color) string {
@@ -430,16 +573,29 @@ func (m model) badge(accent color.Color) string {
 	}
 }
 
-func (m model) tabs() string {
-	tabWidth := m.inner() / len(m.chans)
+func (m model) tabs(l layout) string {
+	tabWidth := l.inner / len(m.chans)
 	var out []string
 	for i, c := range m.chans {
 		label := withIcon(c.Icon, c.Name)
-		style := lipgloss.NewStyle().Width(tabWidth).Align(lipgloss.Center).Border(lipgloss.RoundedBorder())
+		style := lipgloss.NewStyle().Width(tabWidth).Align(lipgloss.Center)
 		if i == m.active {
-			style = style.BorderForeground(c.Colors[0]).Foreground(c.Colors[0]).Bold(true)
+			style = style.Foreground(c.Colors[0]).Bold(true)
 		} else {
-			style = style.BorderForeground(faint).Foreground(muted)
+			style = style.Foreground(muted)
+		}
+		if !l.bigTabs {
+			if i != m.active {
+				style = style.Faint(true)
+			}
+			out = append(out, style.Render(clip(label, tabWidth)))
+			continue
+		}
+		style = style.Border(lipgloss.RoundedBorder())
+		if i == m.active {
+			style = style.BorderForeground(c.Colors[0])
+		} else {
+			style = style.BorderForeground(faint)
 		}
 		tag := fg(lipgloss.Darken(style.GetForeground(), 0.15)).Faint(i != m.active).Italic(true).Render(c.Tagline)
 		out = append(out, style.Render(lipgloss.JoinVertical(lipgloss.Center, label, tag)))
@@ -447,7 +603,7 @@ func (m model) tabs() string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, out...)
 }
 
-func (m model) visualizer() string {
+func (m model) visualizer(rows int) string {
 	levels := []rune(" ▁▂▃▄▅▆▇█")
 	colors := lipgloss.Blend1D(len(m.bars), m.ch().Colors...)
 	if m.state != playing || m.muted {
@@ -456,7 +612,6 @@ func (m model) visualizer() string {
 		}
 	}
 
-	rows := m.vizRows()
 	lines := make([]string, rows)
 	for r := range rows {
 		var b strings.Builder
@@ -478,20 +633,8 @@ func (m model) statusLine(width int) string {
 	dim := fg(muted)
 
 	if m.state == failed {
-		return fg(danger).Width(width).Render(m.errMsg + " · tab to retry")
+		return fg(danger).Render(clip(m.errMsg+" · tab to retry", width))
 	}
-
-	// volume meter
-	slots := min(max(width/4, 10), 24)
-	filled := min(slots, (m.volume*slots+50)/100)
-	meter := fg(m.ch().Colors[1]).Render(strings.Repeat("━", filled)) +
-		fg(faint).Render(strings.Repeat("━", slots-filled))
-	icon := "♪"
-	volText := fmt.Sprintf("%d%%", m.volume)
-	if m.muted {
-		icon, volText = "∅", "muted"
-	}
-	vol := withIcon(dim.Render(icon), meter+dim.Render(" "+volText))
 
 	var right string
 	switch {
@@ -504,10 +647,34 @@ func (m model) statusLine(width int) string {
 	case !m.since.IsZero():
 		right = withIcon("♡", clock(time.Since(m.since)))
 	}
-	right = dim.Render(right)
 
+	icon := "♪"
+	volText := fmt.Sprintf("%d%%", m.volume)
+	if m.muted {
+		icon, volText = "∅", "muted"
+	}
+
+	// the volume meter gives up room first, then the right-hand status
+	volFixed := lipgloss.Width(withIcon(icon, " "+volText))
+	free := width - volFixed
+	if right != "" {
+		free -= lipgloss.Width(right) + 1
+	}
+	if free < 6 {
+		right, free = "", width-volFixed
+	}
+	slots := min(max(width/4, 10), 24, max(free, 0))
+	filled := min(slots, (m.volume*slots+50)/100)
+	meter := fg(m.ch().Colors[1]).Render(strings.Repeat("━", filled)) +
+		fg(faint).Render(strings.Repeat("━", slots-filled))
+	vol := withIcon(dim.Render(icon), meter+dim.Render(" "+volText))
+
+	if right == "" {
+		return clip(vol, width)
+	}
+	right = dim.Render(right)
 	gap := max(1, width-lipgloss.Width(vol)-lipgloss.Width(right))
-	return vol + strings.Repeat(" ", gap) + right
+	return clip(vol+strings.Repeat(" ", gap)+right, width)
 }
 
 // yt-dlp suffixes live titles with the current date and time; drop that and
