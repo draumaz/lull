@@ -1,7 +1,7 @@
 # Maintainer: Emma Anderson <workeandrs@gmail.com>
 pkgname=lull-git
 _pkgname=lull
-pkgver=r5.e8ec86f
+pkgver=r8.06f9d3c
 pkgrel=1
 pkgdesc='A cozy terminal radio for Monstercat Silk livestreams'
 arch=('x86_64' 'aarch64')
