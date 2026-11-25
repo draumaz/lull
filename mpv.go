@@ -95,6 +95,7 @@ func (m *mpv) load(url string)     { m.send("loadfile", url, "replace") }
 func (m *mpv) togglePause()        { m.send("cycle", "pause") }
 func (m *mpv) toggleMute()         { m.send("cycle", "mute") }
 func (m *mpv) addVolume(delta int) { m.send("add", "volume", delta) }
+func (m *mpv) setVolume(v int)     { m.send("set_property", "volume", v) }
 
 func (m *mpv) close() {
 	m.send("quit")

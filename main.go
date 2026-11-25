@@ -113,6 +113,7 @@ type model struct {
 	spin          spinner.Model
 	help          help.Model
 	width, height int
+	dragging      bool // the volume meter is being dragged
 }
 
 func newModel(p *mpv, active, volume int) model {
@@ -305,6 +306,37 @@ func (m *model) setTrack(t track) {
 	}
 }
 
+// act does what a key in the help line does, whether it was pressed or
+// clicked.
+func (m *model) act(b key.Binding) tea.Cmd {
+	switch b.Help() {
+	case keys.Quit.Help():
+		return tea.Quit
+	case keys.Switch.Help():
+		if m.resolved {
+			return m.switchTo((m.active + 1) % len(m.chans))
+		}
+	case keys.Pause.Help():
+		m.player.togglePause()
+	case keys.Up.Help():
+		m.player.addVolume(5)
+	case keys.Down.Help():
+		m.player.addVolume(-5)
+	case keys.Mute.Help():
+		m.player.toggleMute()
+	}
+	return nil
+}
+
+// meterVolume is the volume for a click dx cells into a meter w cells wide:
+// clicking a cell fills the meter up to and including it.
+func meterVolume(dx, w int) int {
+	if w <= 0 || dx < 0 {
+		return 0
+	}
+	return min(100, int(math.Round(float64(dx+1)*100/float64(w))))
+}
+
 // switchTo tunes in to channel i, or retries it if it's the one that failed.
 func (m *model) switchTo(i int) tea.Cmd {
 	if i == m.active && m.state != failed {
@@ -327,36 +359,51 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tuneIn()
 
 	case tea.KeyPressMsg:
-		switch {
-		case key.Matches(msg, keys.Quit):
-			return m, tea.Quit
-		case key.Matches(msg, keys.Switch):
-			if !m.resolved {
-				break
+		switch msg.String() {
+		case "1", "2":
+			if m.resolved {
+				return m, m.switchTo(int(msg.String()[0] - '1'))
 			}
-			next := (m.active + 1) % len(m.chans)
-			switch msg.String() {
-			case "1":
-				next = 0
-			case "2":
-				next = 1
+		}
+		for _, b := range keys.ShortHelp() {
+			if key.Matches(msg, b) {
+				return m, m.act(b)
 			}
-			return m, m.switchTo(next)
-		case key.Matches(msg, keys.Pause):
-			m.player.togglePause()
-		case key.Matches(msg, keys.Up):
-			m.player.addVolume(5)
-		case key.Matches(msg, keys.Down):
-			m.player.addVolume(-5)
-		case key.Matches(msg, keys.Mute):
-			m.player.toggleMute()
 		}
 
 	case tea.MouseClickMsg:
-		if msg.Button == tea.MouseLeft && m.resolved {
-			if i := m.tabAt(msg.X, msg.Y); i >= 0 {
-				return m, m.switchTo(i)
+		if msg.Button != tea.MouseLeft {
+			break
+		}
+		r, dx := m.regionAt(msg.X, msg.Y)
+		switch r.what {
+		case onTab:
+			if m.resolved {
+				return m, m.switchTo(r.i)
 			}
+		case onMeter:
+			m.dragging = true
+			m.player.setVolume(meterVolume(dx, r.w))
+		case onHelp:
+			return m, m.act(keys.ShortHelp()[r.i])
+		}
+
+	case tea.MouseMotionMsg:
+		if m.dragging && msg.Button == tea.MouseLeft {
+			if r, ok := m.meter(); ok {
+				m.player.setVolume(meterVolume(msg.X-r.x, r.w))
+			}
+		}
+
+	case tea.MouseReleaseMsg:
+		m.dragging = false
+
+	case tea.MouseWheelMsg:
+		switch msg.Button {
+		case tea.MouseWheelUp:
+			m.player.addVolume(5)
+		case tea.MouseWheelDown:
+			m.player.addVolume(-5)
 		}
 
 	case mpvMsg:
@@ -483,9 +530,66 @@ func fg(c color.Color) lipgloss.Style { return lipgloss.NewStyle().Foreground(c)
 // text that follows.
 func withIcon(icon, text string) string { return icon + "  " + text }
 
-// compose renders everything but the placement in the window, and says
-// where the card sits horizontally within it.
-func (m model) compose() (ui string, cardX int, l layout) {
+// ── mouse ───────────────────────────────────────────────────────────────────
+
+type target int
+
+const (
+	nowhere target = iota
+	onTab          // i is the channel
+	onMeter        // the volume meter
+	onHelp         // i is the binding in keys.ShortHelp()
+)
+
+// region is a clickable rectangle, in cells.
+type region struct {
+	x, y, w, h int
+	what       target
+	i          int
+}
+
+func (r region) contains(x, y int) bool {
+	return x >= r.x && x < r.x+r.w && y >= r.y && y < r.y+r.h
+}
+
+// regions are the clickable parts of the screen, in screen coordinates.
+func (m model) regions() []region {
+	ui, _, rs := m.compose()
+	if m.width > 0 && m.height > 0 {
+		dx := placeOffset(m.width, lipgloss.Width(ui))
+		dy := placeOffset(m.height, lipgloss.Height(ui))
+		for i := range rs {
+			rs[i].x += dx
+			rs[i].y += dy
+		}
+	}
+	return rs
+}
+
+// regionAt is what's at cell (x, y) on screen, and how far into it.
+func (m model) regionAt(x, y int) (region, int) {
+	for _, r := range m.regions() {
+		if r.contains(x, y) {
+			return r, x - r.x
+		}
+	}
+	return region{}, 0
+}
+
+func (m model) meter() (region, bool) {
+	for _, r := range m.regions() {
+		if r.what == onMeter {
+			return r, true
+		}
+	}
+	return region{}, false
+}
+
+// ── view ─ composition ──────────────────────────────────────────────────────
+
+// compose renders everything but the placement in the window, and maps out
+// what's clickable within it.
+func (m model) compose() (ui string, l layout, rs []region) {
 	accent := m.ch().Colors[0]
 	l = m.layout()
 	inner := l.inner
@@ -498,7 +602,8 @@ func (m model) compose() (ui string, cardX int, l layout) {
 	if l.viz > 0 {
 		sections = append(sections, m.visualizer(l.viz))
 	}
-	sections = append(sections, m.statusLine(inner))
+	status, slots := m.statusLine(inner)
+	sections = append(sections, status)
 	if l.gaps {
 		spaced := make([]string, 0, 2*len(sections))
 		for i, s := range sections {
@@ -515,7 +620,21 @@ func (m model) compose() (ui string, cardX int, l layout) {
 		card = card.Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Darken(accent, 0.25))
 	}
 	ui = card.Render(lipgloss.JoinVertical(lipgloss.Left, sections...))
-	cardW := lipgloss.Width(ui)
+	cardW, cardH := lipgloss.Size(ui)
+
+	// where things landed inside the card
+	edge := cond(l.border, 1, 0)
+	left, top := edge+l.padX, edge+l.padY
+	if l.tabs {
+		tabWidth := inner / len(m.chans)
+		y := top + 1 + cond(l.gaps, 1, 0) // below the header
+		for i := range m.chans {
+			rs = append(rs, region{left + i*tabWidth, y, tabWidth, cond(l.bigTabs, 4, 1), onTab, i})
+		}
+	}
+	if slots > 0 {
+		rs = append(rs, region{left + lipgloss.Width(withIcon("♪", "")), cardH - 1 - top, slots, 1, onMeter, 0})
+	}
 
 	if l.help {
 		h, full := m.help, m.help
@@ -528,11 +647,35 @@ func (m model) compose() (ui string, cardX int, l layout) {
 			parts = append(parts, "")
 		}
 		// help gives up on the ellipsis, and the width, when "…" won't fit
-		ui = lipgloss.JoinVertical(lipgloss.Center, append(parts, clip(h.View(keys), m.width))...)
+		raw := h.View(keys)
+		line := clip(raw, m.width)
+		ui = lipgloss.JoinVertical(lipgloss.Center, append(parts, line)...)
+
 		// JoinVertical puts the odd column of slack on the left
-		cardX = int(math.Round(float64(lipgloss.Width(ui)-cardW) / 2))
+		uiW, uiH := lipgloss.Size(ui)
+		cardX := int(math.Round(float64(uiW-cardW) / 2))
+		for i := range rs {
+			rs[i].x += cardX
+		}
+		lineW := lipgloss.Width(line)
+		x := int(math.Round(float64(uiW-lineW) / 2))
+		end := x + lineW
+		if lipgloss.Width(raw) > lineW {
+			end-- // an item cut off by the "…" doesn't count
+		}
+		for i, b := range keys.ShortHelp() {
+			if i > 0 {
+				x += lipgloss.Width(h.ShortSeparator)
+			}
+			w := lipgloss.Width(b.Help().Key + " " + b.Help().Desc)
+			if x+w > end {
+				break // didn't fit
+			}
+			rs = append(rs, region{x, uiH - 1, w, 1, onHelp, i})
+			x += w
+		}
 	}
-	return ui, cardX, l
+	return ui, l, rs
 }
 
 // placeOffset is how far lipgloss.Place shifts a centred block of size n
@@ -543,27 +686,6 @@ func placeOffset(total, n int) int {
 		return 0
 	}
 	return gap - int(math.Round(float64(gap)/2))
-}
-
-// tabAt is the channel whose tab is at cell (x, y) on screen, or -1.
-func (m model) tabAt(x, y int) int {
-	ui, cardX, l := m.compose()
-	if !l.tabs {
-		return -1
-	}
-	if m.width > 0 && m.height > 0 {
-		x -= placeOffset(m.width, lipgloss.Width(ui))
-		y -= placeOffset(m.height, lipgloss.Height(ui))
-	}
-	edge := cond(l.border, 1, 0)
-	top := edge + l.padY + 1 + cond(l.gaps, 1, 0) // below the header
-	x -= cardX + edge + l.padX
-	y -= top
-	tabWidth := l.inner / len(m.chans)
-	if y < 0 || y >= cond(l.bigTabs, 4, 1) || x < 0 || x >= tabWidth*len(m.chans) {
-		return -1
-	}
-	return x / tabWidth
 }
 
 func (m model) View() tea.View {
@@ -684,11 +806,12 @@ func (m model) visualizer(rows int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m model) statusLine(width int) string {
+// statusLine also says how wide the volume meter is, so it can be clicked.
+func (m model) statusLine(width int) (string, int) {
 	dim := fg(muted)
 
 	if m.state == failed {
-		return fg(danger).Render(clip(m.errMsg+" · tab to retry", width))
+		return fg(danger).Render(clip(m.errMsg+" · tab to retry", width)), 0
 	}
 
 	var right string
@@ -725,11 +848,11 @@ func (m model) statusLine(width int) string {
 	vol := withIcon(dim.Render(icon), meter+dim.Render(" "+volText))
 
 	if right == "" {
-		return clip(vol, width)
+		return clip(vol, width), slots
 	}
 	right = dim.Render(right)
 	gap := max(1, width-lipgloss.Width(vol)-lipgloss.Width(right))
-	return clip(vol+strings.Repeat(" ", gap)+right, width)
+	return clip(vol+strings.Repeat(" ", gap)+right, width), slots
 }
 
 // yt-dlp suffixes live titles with the current date and time; drop that and

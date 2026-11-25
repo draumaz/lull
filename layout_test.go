@@ -63,7 +63,7 @@ func TestViewFitsWindow(t *testing.T) {
 }
 
 // Clicking a tab's label must pick that tab, wherever the layout put it.
-func TestTabAt(t *testing.T) {
+func TestClickTabs(t *testing.T) {
 	for w := 20; w <= 220; w += 7 {
 		for h := 4; h <= 40; h += 3 {
 			m := testModel(w, h)
@@ -82,8 +82,8 @@ func TestTabAt(t *testing.T) {
 					found = true
 					x := ansi.StringWidth(line[:col])
 					for dx := range len(name) {
-						if got := m.tabAt(x+dx, y); got != i {
-							t.Fatalf("%dx%d: click at %d,%d on %q hit tab %d", w, h, x+dx, y, name, got)
+						if r, _ := m.regionAt(x+dx, y); r.what != onTab || r.i != i {
+							t.Fatalf("%dx%d: click at %d,%d on %q hit %+v", w, h, x+dx, y, name, r)
 						}
 					}
 				}
@@ -91,9 +91,59 @@ func TestTabAt(t *testing.T) {
 					t.Fatalf("%dx%d: %q not on screen", w, h, name)
 				}
 			}
-			if got := m.tabAt(0, 0); got != -1 {
-				t.Fatalf("%dx%d: top-left corner hit tab %d", w, h, got)
+			if r, _ := m.regionAt(0, 0); r.what != nowhere {
+				t.Fatalf("%dx%d: top-left corner hit %+v", w, h, r)
 			}
+		}
+	}
+}
+
+// The meter and help items must be clickable exactly where they're drawn.
+func TestClickMeterAndHelp(t *testing.T) {
+	for w := 16; w <= 220; w += 5 {
+		for h := 3; h <= 40; h += 3 {
+			m := testModel(w, h)
+			lines := strings.Split(ansi.Strip(m.View().Content), "\n")
+			at := func(x, y int) string {
+				if y < 0 || y >= len(lines) {
+					return ""
+				}
+				return ansi.Cut(lines[y], x, x+1)
+			}
+
+			meter, ok := m.meter()
+			if !ok {
+				t.Fatalf("%dx%d: no volume meter", w, h)
+			}
+			for dx := range meter.w {
+				if c := at(meter.x+dx, meter.y); c != "━" {
+					t.Fatalf("%dx%d: meter cell %d is %q", w, h, dx, c)
+				}
+			}
+			if c := at(meter.x+meter.w, meter.y); c == "━" {
+				t.Fatalf("%dx%d: meter runs past its region", w, h)
+			}
+
+			for _, r := range m.regions() {
+				if r.what != onHelp {
+					continue
+				}
+				b := keys.ShortHelp()[r.i].Help()
+				want := b.Key + " " + b.Desc
+				if got := ansi.Cut(lines[r.y], r.x, r.x+r.w); got != want {
+					t.Fatalf("%dx%d: help region %d covers %q, not %q", w, h, r.i, got, want)
+				}
+			}
+		}
+	}
+}
+
+func TestMeterVolume(t *testing.T) {
+	for _, c := range []struct{ dx, w, want int }{
+		{-1, 10, 0}, {0, 10, 10}, {4, 10, 50}, {9, 10, 100}, {20, 10, 100}, {0, 0, 0},
+	} {
+		if got := meterVolume(c.dx, c.w); got != c.want {
+			t.Errorf("meterVolume(%d, %d) = %d, want %d", c.dx, c.w, got, c.want)
 		}
 	}
 }
